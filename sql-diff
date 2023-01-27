@@ -1,10 +1,12 @@
 #!/usr/bin/python3
+import difflib
 import io
 import re
 import sqlparse
 import sys
 import token
 import tokenize
+
 import clickhouse_driver
 
 __version__ = '0.1.0'
@@ -60,6 +62,22 @@ def expand_scientific(s):
         return '%.0f.' % float(s)
     else:
         return s
+
+def preview_diff(a, b):
+    def clip(s):
+        if len(s) > 80:
+            return s[0:76] + '...' + s[-1]
+        else:
+            return s
+    matcher = difflib.SequenceMatcher(None, a, b)
+    for tag, i1, i2, j1, j2 in matcher.get_opcodes():
+        if tag == 'insert':
+            return clip('insert "%s"' % b[j1:j2])
+        elif tag == 'delete':
+            return clip('insert "%s"' % a[i1:i2])
+        elif tag == 'replace':
+            return clip('replace "%s" -> "%s"' % (a[i1:i2], b[j1:j2]))
+    return ''
 
 ###############################################################################
 class Client(clickhouse_driver.Client):
@@ -134,7 +152,8 @@ class MT(Table):
                     state = 0 # quick & dirty heuristic to end TTL/SETTINGS clause
                 else:
                     if state == 1:
-                        ttl += [x]
+                        if x.string != 'DELETE': # system.tables omits DELETE
+                            ttl += [x]
                     elif state == 2:
                         if setting == '':
                             setting = x.string
@@ -143,7 +162,7 @@ class MT(Table):
                             setting = ''
             else:
                 if state == 1:
-                    ttl.append(x)
+                    ttl += [x]
                 elif state == 2:
                     if x.exact_type not in [
                         token.EQUAL, token.COMMA, token.ENDMARKER, token.NEWLINE]:
@@ -176,9 +195,9 @@ class MT(Table):
                 elif x.string in ['TTL', 'SETTINGS', 'KEY']:
                     state = 0 # quick & dirty heuristic
             if state == 2:
-                partition_key.append(x)
+                partition_key += [x]
             elif state == 4:
-                sorting_key.append(x)
+                sorting_key += [x]
 
         self.partition_key = untokenize(s, partition_key)
         self.sorting_key = untokenize(s, sorting_key)
@@ -200,19 +219,19 @@ class MT(Table):
             return ret
 
         if self.ttl != other.ttl:
-            ret.append('TTL')
+            ret += ['TTL']
 
         for setting in set(self.settings.values()) ^ set(other.settings.values()):
             if setting.startswith('storage_policy'):
-                ret.append('storage policy')
+                ret += ['storage policy']
             else:
-                ret.append(setting)
+                ret += [setting]
 
         if self.partition_key != other.partition_key:
-            ret.append('partitioning')
+            ret += ['partitioning']
 
         if self.sorting_key != other.sorting_key:
-            ret.append('sorting')
+            ret += ['sorting']
 
         return ret
 
@@ -252,10 +271,10 @@ class MV(Table):
                     fr = [] # reset in order to capture last of multiple 'FROM'
                     count = 4
             if state == 1:
-                to.append(x.string)
+                to += [x.string]
                 count -= 1
             elif state == 2:
-                fr.append(x.string)
+                fr += [x.string]
                 count -= 1
             if count == 0:
                 state = 0
@@ -271,11 +290,11 @@ class MV(Table):
             elif state == 1:
                 if x.type == token.NAME and x.string == 'SELECT':
                     state = 2
-                    as_select.append(x)
+                    as_select += [x]
                 else:
                     state = 0
             elif state == 2:
-                as_select.append(x)
+                as_select += [x]
 
         self.as_select = untokenize(s, as_select)
 
@@ -295,13 +314,16 @@ class MV(Table):
             return ret
 
         if self.as_select != other.as_select:
-            ret.append('AS SELECT statement')
+            s = preview_diff(self.as_select, other.as_select)
+            if len(s) > 0:
+                s = ' (%s)' % s
+            ret += ['AS SELECT statement%s' % s]
 
         if self.to != other.to:
-            ret.append('TO table')
+            ret += ['TO table']
 
         if self.fr != other.fr:
-            ret.append('FROM table')
+            ret += ['FROM table']
 
         return ret
 
@@ -356,10 +378,10 @@ class Buffer(Table):
             return ret
 
         if self.to != other.to:
-            ret.append('TO table')
+            ret += ['TO table']
 
         if set(self.parameters.items()) ^ set(other.parameters.items()):
-            ret.append('parameters')
+            ret += ['parameters']
 
         return ret
 
@@ -410,7 +432,7 @@ class Dist(Table):
             return ret
 
         if self.fr != other.fr:
-            ret.append('FROM table')
+            ret += ['FROM table']
 
         return ret
 
