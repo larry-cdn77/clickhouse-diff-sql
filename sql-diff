@@ -72,6 +72,15 @@ def untokenize(s, t):
     # some extra postprocessing for clean comparison
     return u.replace('( ', '(').replace(' )', ')').strip()
 
+def expand_scientific(s):
+    '''
+    '5e+3' -> '5000.'
+    '''
+    if s.find('e+') > 0:
+        return '%.0f.' % float(s)
+    else:
+        return s
+
 #
 # Column
 #
@@ -146,7 +155,7 @@ class MT(Table):
                 elif state == 2:
                     if x.exact_type not in [
                         token.EQUAL, token.COMMA, token.ENDMARKER, token.NEWLINE]:
-                        self.settings[setting] = '%s=%s' % (setting, x.string)
+                        self.settings[setting] = '%s=%s' % (setting, expand_scientific(x.string))
                         setting = ''
 
         self.ttl = untokenize(s, ttl)
@@ -332,7 +341,7 @@ class Buffer(Table):
                 elif name == '':
                     name = eval(x.string)
             elif x.type == token.NUMBER:
-                self.parameters[index] = x.string
+                self.parameters[index] = expand_scientific(x.string)
                 index += 1
 
         self.to = '%s.%s' % (db, name)
