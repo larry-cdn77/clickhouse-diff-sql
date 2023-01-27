@@ -247,6 +247,7 @@ class MV(Table):
                     count = 4
                 elif x.string == 'FROM':
                     state = 2
+                    fr = [] # reset in order to capture last of multiple 'FROM'
                     count = 4
             if state == 1:
                 to.append(x.string)
