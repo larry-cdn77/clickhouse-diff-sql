@@ -9,7 +9,7 @@ import tokenize
 
 import clickhouse_driver
 
-__version__ = '0.1.0'
+__version__ = '0.1.1'
 
 sqlparse_format = {
     'strip_comments': True,
