@@ -14,42 +14,22 @@ sqlparse_format = {
     'use_space_around_operators': False
 }
 
-#
-# Client
-#
-class Client(clickhouse_driver.Client):
-    def __init__(self, *args, **kwargs):
-        super().__init__(*args, **kwargs)
-
-    def execute_clickhouse_tables_sql_tokens(self, dbname, column):
-        (value,) = \
-            self.execute('''SELECT
-            %s FROM system.tables WHERE database == '%s' AND name = '%s'
-            ''' % ((column,) + tuple(dbname.split('.'))))[0]
-
-        formatted = sqlparse.format(value, **sqlparse_format)
-        return formatted, \
-            list(tokenize.generate_tokens(io.StringIO(formatted).readline))
-
-#
-# untokenize
-#
 def untokenize(s, t):
-    # own tokenize.untokenize
-    #
-    # - strange newlines in output of untokenize appeared when a list of whole
-    #   token tuples is passed to it instead of a type/string pair (even though
-    #   documentation stated that 'any additional sequence elements are
-    #   ignored')
-    #
-    # - joining does not recover whitespace properly, token strings get
-    #   squashed (documentation said 'the result is guaranteed to tokenize
-    #   back to match the input so that the conversion is lossless and
-    #   round-trips are assured')
-    #
-    # specialised to continuous sequence of token positions, ie take everything
-    # from start of first token to end of last token
-    #
+    '''own tokenize.untokenize
+
+    - strange newlines in output of untokenize appeared when a list of whole
+      token tuples is passed to it instead of a type/string pair (even though
+      documentation stated that 'any additional sequence elements are
+      ignored')
+
+    - joining does not recover whitespace properly, token strings get
+      squashed (documentation said 'the result is guaranteed to tokenize
+      back to match the input so that the conversion is lossless and
+      round-trips are assured')
+
+    specialised to continuous sequence of token positions, ie take everything
+    from start of first token to end of last token
+    '''
     if len(t) == 0:
         return ''
 
@@ -81,9 +61,22 @@ def expand_scientific(s):
     else:
         return s
 
-#
-# Column
-#
+###############################################################################
+class Client(clickhouse_driver.Client):
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+
+    def execute_clickhouse_tables_sql_tokens(self, dbname, column):
+        (value,) = \
+            self.execute('''SELECT
+            %s FROM system.tables WHERE database == '%s' AND name = '%s'
+            ''' % ((column,) + tuple(dbname.split('.'))))[0]
+
+        formatted = sqlparse.format(value, **sqlparse_format)
+        return formatted, \
+            list(tokenize.generate_tokens(io.StringIO(formatted).readline))
+
+###############################################################################
 class Column(object):
     def __init__(
         self,
@@ -101,9 +94,7 @@ class Column(object):
         self.is_in_partition_key = is_in_partition_key
         self.is_in_sorting_key = is_in_sorting_key
 
-#
-# Table
-#
+###############################################################################
 class Table(object):
     def __init__(self, engine, dbname):
         self.engine = engine
@@ -114,10 +105,11 @@ class Table(object):
             return ['engine: %s file, %s live' % (self.engine, other.engine)]
         return []
 
-#
-# MT: MergeTree engine family
-#
+###############################################################################
 class MT(Table):
+    '''
+    MergeTree engine family
+    '''
     def __init__(self, dbname):
         super().__init__('MergeTree', dbname)
 
@@ -234,10 +226,11 @@ class MT(Table):
              self.partition_key,
              self.sorting_key)
 
-#
-# MV: MaterializedView engine
-#
+###############################################################################
 class MV(Table):
+    '''
+    MaterializedView engine
+    '''
     def __init__(self, dbname):
         super().__init__('MaterializedView', dbname)
 
@@ -321,10 +314,11 @@ class MV(Table):
              self.as_select,
              self.fr)
 
-#
-# Buffer: Buffer engine
-#
+###############################################################################
 class Buffer(Table):
+    '''
+    Buffer engine
+    '''
     def __init__(self, dbname):
         super().__init__('Buffer', dbname)
 
@@ -377,10 +371,11 @@ class Buffer(Table):
              self.to,
              ','.join(self.parameters.values()))
 
-#
-# Dist: Distributed engine
-#
+###############################################################################
 class Dist(Table):
+    '''
+    Distributed engine
+    '''
     def __init__(self, dbname):
         super().__init__('Dist', dbname)
 
@@ -426,10 +421,11 @@ class Dist(Table):
              self.dbname,
              self.fr)
 
-#
-# Null: Null engine
-#
+###############################################################################
 class Null(Table):
+    '''
+    Null engine
+    '''
     def __init__(self, dbname):
         super().__init__('Null', dbname)
 
@@ -452,9 +448,7 @@ class Null(Table):
             (self.engine,
              self.dbname)
 
-#
-# Model
-#
+###############################################################################
 class Model(object):
     def __init__(self):
         self.mt = {}
@@ -564,6 +558,7 @@ class Model(object):
     def __str__(self):
         return '\n'.join([str(x) for x in self.all_tables().values()])
 
+###############################################################################
 def __main__():
     if len(sys.argv) < 3:
         print('''usage: sql-diff HOST FILE ...
