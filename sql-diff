@@ -471,6 +471,60 @@ class Null(Table):
              self.dbname)
 
 ###############################################################################
+class TinyLog(Table):
+    '''
+    TinyLog engine
+    '''
+    def __init__(self, dbname):
+        super().__init__('TinyLog', dbname)
+
+    def scan(self, client):
+        return self
+
+    def read(self, s, t):
+        return self
+
+    def diff(self, other):
+        ret = super().diff(other)
+        if len(ret) > 0:
+            return ret
+
+        return ret
+
+    def __str__(self):
+        return \
+            '%s %s' % \
+            (self.engine,
+             self.dbname)
+
+###############################################################################
+class Dictionary(Table):
+    '''
+    Dictionary engine
+    '''
+    def __init__(self, dbname):
+        super().__init__('Dictionary', dbname)
+
+    def scan(self, client):
+        return self
+
+    def read(self, s, t):
+        return self
+
+    def diff(self, other):
+        ret = super().diff(other)
+        if len(ret) > 0:
+            return ret
+
+        return ret
+
+    def __str__(self):
+        return \
+            '%s %s' % \
+            (self.engine,
+             self.dbname)
+
+###############################################################################
 class Model(object):
     def __init__(self):
         self.mt = {}
@@ -496,6 +550,10 @@ class Model(object):
                 self.dist[dbname] = Dist(dbname).scan(client)
             elif engine == 'Null':
                 self.null[dbname] = Null(dbname).scan(client)
+            elif engine == 'TinyLog':
+                self.null[dbname] = TinyLog(dbname).scan(client)
+            elif engine == 'Dictionary':
+                self.null[dbname] = Dictionary(dbname).scan(client)
             else:
                 print('warning: %s: ignore unrecognised engine: %s' % (dbname, engine))
 
@@ -542,6 +600,9 @@ class Model(object):
         if t[1].string == 'MATERIALIZED' and t[2].string == 'VIEW':
             dbname = '%s.%s' % (t[3].string, t[5].string)
             engine = 'MaterializedView'
+        elif t[1].string == 'DICTIONARY':
+            dbname = '%s.%s' % (t[2].string, t[4].string)
+            engine = 'Dictionary'
         elif t[1].string == 'TABLE':
             dbname = '%s.%s' % (t[2].string, t[4].string)
             engine = self._detect_engine(t)
@@ -558,6 +619,10 @@ class Model(object):
             self.dist[dbname] = Dist(dbname).read(s, t)
         elif engine == 'Null':
             self.null[dbname] = Null(dbname).read(s, t)
+        elif engine == 'TinyLog':
+            self.null[dbname] = TinyLog(dbname).read(s, t)
+        elif engine == 'Dictionary':
+            self.null[dbname] = Dictionary(dbname).read(s, t)
 
     def _read_statement(self, s, t):
         if t[0].string == 'CREATE':
