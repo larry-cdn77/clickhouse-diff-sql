@@ -9,7 +9,7 @@ import tokenize
 
 import clickhouse_driver
 
-__version__ = '0.1.1'
+__version__ = '0.1.2'
 
 sqlparse_format = {
     'strip_comments': True,
@@ -17,7 +17,8 @@ sqlparse_format = {
 }
 
 def untokenize(s, t):
-    '''own tokenize.untokenize
+    '''
+    own tokenize.untokenize to work around:
 
     - strange newlines in output of untokenize appeared when a list of whole
       token tuples is passed to it instead of a type/string pair (even though
@@ -72,11 +73,11 @@ def preview_diff(a, b):
     matcher = difflib.SequenceMatcher(None, a, b)
     for tag, i1, i2, j1, j2 in matcher.get_opcodes():
         if tag == 'insert':
-            return clip('insert "%s"' % b[j1:j2])
+            return clip('+ "%s"' % b[j1:j2])
         elif tag == 'delete':
-            return clip('insert "%s"' % a[i1:i2])
+            return clip('- "%s"' % a[i1:i2])
         elif tag == 'replace':
-            return clip('replace "%s" -> "%s"' % (a[i1:i2], b[j1:j2]))
+            return clip('"%s" -> "%s"' % (a[i1:i2], b[j1:j2]))
     return ''
 
 ###############################################################################
@@ -95,38 +96,61 @@ class Client(clickhouse_driver.Client):
             list(tokenize.generate_tokens(io.StringIO(formatted).readline))
 
 ###############################################################################
-class Column(object):
-    def __init__(
-        self,
-        name,
-        position,
-        type,
-        compression_codec,
-        is_in_partition_key,
-        is_in_sorting_key
-    ):
-        self.name = name
-        self.position = position
-        self.type = type
-        self.compression_codec = compression_codec
-        self.is_in_partition_key = is_in_partition_key
-        self.is_in_sorting_key = is_in_sorting_key
-
-###############################################################################
 class Table(object):
     def __init__(self, engine, dbname):
         self.engine = engine
         self.dbname = dbname
+        self.columns = []
+
+    def _parse_columns(self, s, t):
+        state = 0 # 1 = in outer brackets, 2 = in column, 3 = done
+        level = 0
+        column = []
+        for x in t:
+            if x.exact_type == token.LPAR:
+                level += 1
+                if level == 1:
+                    continue
+            elif x.exact_type == token.RPAR:
+                level -= 1
+                if level == 0:
+                    self.columns += [untokenize(s, column)]
+                    column = []
+                    break
+            elif x.exact_type == token.COMMA:
+                if level == 1:
+                    self.columns += [untokenize(s, column)]
+                    column = []
+                    continue
+            if level >= 1:
+                column += [x]
+
+        # work around what appear untokenize including backquotes presumably
+        # as it considers them parsing errors (ERRORTOKEN)
+        for i in range(len(self.columns)):
+            self.columns[i] = self.columns[i].replace('`', '')
 
     def diff(self, other):
         if self.engine != other.engine:
-            return ['engine: %s file, %s live' % (self.engine, other.engine)]
+            return ['engine: %s, %s' % (self.engine, other.engine)]
+
+        if len(self.columns) > 0 and len(other.columns) > 0:
+            diff = list(difflib.unified_diff(sorted(self.columns),
+                sorted(other.columns), n=0, lineterm=''))
+            if len(diff) > 0:
+                return ['columns: ' + ' '.join(diff)]
+
         return []
+
+    def __str__(self):
+        return '%s %s' % (self.engine, self.dbname)
 
 ###############################################################################
 class MT(Table):
     '''
     MergeTree engine family
+
+    check columns, TTL, settings, partitioning key and sorting key
     '''
     def __init__(self, dbname):
         super().__init__('MergeTree', dbname)
@@ -206,10 +230,14 @@ class MT(Table):
         self._parse_engine(*client.execute_clickhouse_tables_sql_tokens(
             self.dbname, 'engine_full'))
 
+        self._parse_columns(*client.execute_clickhouse_tables_sql_tokens(
+            self.dbname, 'create_table_query'))
+
         return self
 
     def read(self, s, t):
         self._parse_engine(s, t)
+        self._parse_columns(s, t)
 
         return self
 
@@ -237,9 +265,8 @@ class MT(Table):
 
     def __str__(self):
         return \
-            '%s %s TTL %s SETTINGS %s PARTITION BY %s ORDER BY %s' % \
-            (self.engine,
-             self.dbname,
+            '%s TTL %s SETTINGS %s PARTITION BY %s ORDER BY %s' % \
+            (str(super()),
              self.ttl,
              ','.join(self.settings.values()),
              self.partition_key,
@@ -249,6 +276,8 @@ class MT(Table):
 class MV(Table):
     '''
     MaterializedView engine
+
+    check select statement, source table and destionation tables
     '''
     def __init__(self, dbname):
         super().__init__('MaterializedView', dbname)
@@ -257,7 +286,7 @@ class MV(Table):
         self.to = ''
         self.fr = ''
 
-    def _parse_as_select(self, s, t):
+    def _parse_create_query(self, s, t):
         state = 0 # 1 = TO, 2 = FROM
         count = 0
         fr, to = [], []
@@ -299,13 +328,13 @@ class MV(Table):
         self.as_select = untokenize(s, as_select)
 
     def scan(self, client):
-        self._parse_as_select(*client.execute_clickhouse_tables_sql_tokens(
+        self._parse_create_query(*client.execute_clickhouse_tables_sql_tokens(
             self.dbname, 'create_table_query'))
 
         return self
 
     def read(self, s, t):
-        self._parse_as_select(s, t)
+        self._parse_create_query(s, t)
         return self
 
     def diff(self, other):
@@ -329,9 +358,8 @@ class MV(Table):
 
     def __str__(self):
         return \
-            '%s %s TO %s AS %s (FROM %s)' % \
-            (self.engine,
-             self.dbname,
+            '%s TO %s AS %s (FROM %s)' % \
+            (str(super()),
              self.to,
              self.as_select,
              self.fr)
@@ -340,6 +368,8 @@ class MV(Table):
 class Buffer(Table):
     '''
     Buffer engine
+    
+    check engine parameters, target database and table (from engine arguments)
     '''
     def __init__(self, dbname):
         super().__init__('Buffer', dbname)
@@ -387,9 +417,8 @@ class Buffer(Table):
 
     def __str__(self):
         return \
-            '%s %s TO %s (%s)' % \
-            (self.engine,
-             self.dbname,
+            '%s TO %s (%s)' % \
+            (str(super()),
              self.to,
              ','.join(self.parameters.values()))
 
@@ -397,6 +426,8 @@ class Buffer(Table):
 class Dist(Table):
     '''
     Distributed engine
+
+    check source database and table from engine arguments
     '''
     def __init__(self, dbname):
         super().__init__('Dist', dbname)
@@ -438,23 +469,28 @@ class Dist(Table):
 
     def __str__(self):
         return \
-            '%s %s FROM %s' % \
-            (self.engine,
-             self.dbname,
+            '%s FROM %s' % \
+            (str(super()),
              self.fr)
 
 ###############################################################################
 class Null(Table):
     '''
     Null engine
+
+    check columns
     '''
     def __init__(self, dbname):
         super().__init__('Null', dbname)
 
     def scan(self, client):
+        self._parse_columns(*client.execute_clickhouse_tables_sql_tokens(
+            self.dbname, 'create_table_query'))
+
         return self
 
     def read(self, s, t):
+        self._parse_columns(s, t)
         return self
 
     def diff(self, other):
@@ -465,23 +501,26 @@ class Null(Table):
         return ret
 
     def __str__(self):
-        return \
-            '%s %s' % \
-            (self.engine,
-             self.dbname)
+        return str(super())
 
 ###############################################################################
 class TinyLog(Table):
     '''
     TinyLog engine
+
+    check columns
     '''
     def __init__(self, dbname):
         super().__init__('TinyLog', dbname)
 
     def scan(self, client):
+        self._parse_columns(*client.execute_clickhouse_tables_sql_tokens(
+            self.dbname, 'create_table_query'))
+
         return self
 
     def read(self, s, t):
+        self._parse_columns(s, t)
         return self
 
     def diff(self, other):
@@ -492,29 +531,197 @@ class TinyLog(Table):
         return ret
 
     def __str__(self):
-        return \
-            '%s %s' % \
-            (self.engine,
-             self.dbname)
+        return str(super())
 
 ###############################################################################
-class Dictionary(Table):
+class KeeperMap(Table):
     '''
-    Dictionary engine
+    KeeperMap engine
+
+    check columns and node path
     '''
     def __init__(self, dbname):
-        super().__init__('Dictionary', dbname)
+        super().__init__('KeeperMap', dbname)
+
+        self.node_path = ''
+
+    def _parse_engine(self, s, t):
+        node_path = ''
+        for x in t:
+            if x.type == token.STRING:
+                if node_path == '': # heuristic on first string encountered
+                    node_path = eval(x.string)
+
+        self.node_path = node_path
 
     def scan(self, client):
+        self._parse_engine(*client.execute_clickhouse_tables_sql_tokens(
+            self.dbname, 'engine_full'))
+
+        self._parse_columns(*client.execute_clickhouse_tables_sql_tokens(
+            self.dbname, 'create_table_query'))
+
         return self
 
     def read(self, s, t):
+        self._parse_engine(s, t)
+        self._parse_columns(s, t)
         return self
 
     def diff(self, other):
         ret = super().diff(other)
         if len(ret) > 0:
             return ret
+
+        if self.node_path != other.node_path:
+            ret += ['node path: %s, %s' % (self.node_path, other.node_path)]
+
+        return ret
+
+    def __str__(self):
+        return str(super())
+
+###############################################################################
+class Dictionary(Table):
+    '''
+    Dictionary engine
+
+    check columns, primary key, source, layout and lifetime
+    '''
+    def __init__(self, dbname):
+        super().__init__('Dictionary', dbname)
+
+        self.primary_key = ''
+        self.source = ''
+        self.layout = ''
+        self.lifetime = ''
+
+    def _parse_lifetime(self, s, t):
+        state = 0 # 1 = (, 2 = number, 3 = MIN, 4 = MAX, 5 = )
+        pmin, pmax = 0, 0
+        for x in t:
+            if x.type == token.NAME:
+                if x.string == 'MIN':
+                    if state == 1:
+                        state = 3
+                        continue
+                elif x.string == 'MAX':
+                    if state == 3:
+                        state = 4
+                        continue
+            elif x.type == token.NUMBER:
+                if state == 1:
+                    pmax = eval(x.string)
+                    state = 2
+            elif x.exact_type == token.LPAR:
+                if state == 0:
+                    state = 1
+                    continue
+            elif x.exact_type == token.RPAR:
+                if state == 2 or state == 4:
+                    state = 5
+                    continue
+            if state == 3:
+                pmin = eval(x.string)
+            elif state == 4:
+                pmax = eval(x.string)
+        return [pmin, pmax]
+
+    def _parse_source(self, s, t):
+        state = 0 # 1 = CLICKHOUSE, 2 = (, 3 = DB, 4 = TABLE, 5 = )
+        chdb, chtable = '', ''
+        for x in t:
+            if x.type == token.NAME:
+                if x.string == 'CLICKHOUSE':
+                    if state == 0:
+                        state = 1
+                        continue
+                elif x.string == 'DB':
+                    if state == 2 or state == 4:
+                        state = 3
+                        continue
+                elif x.string == 'TABLE':
+                    if state == 2 or state == 3:
+                        state = 4
+                        continue
+            elif x.exact_type == token.LPAR:
+                if state == 1:
+                    state = 2
+            elif x.exact_type == token.RPAR:
+                if state == 3 or state == 4:
+                    state = 5
+            if state == 3:
+                chdb = eval(x.string)
+            elif state == 4:
+                chtable = eval(x.string)
+        if len(chdb) > 0 and len(chtable) > 0:
+            return "CLICKHOUSE(DB '%s' TABLE '%s')" % (chdb, chtable)
+        else: # incomplete ClickHouse source or other source
+            return untokenize(s, t) # use whole text including SOURCE
+
+    def _parse_create_query(self, s, t):
+        state = 0 # 1 = PRIMARY, 2 = KEY, 3 = SOURCE, 4 = LAYOUT, 5 = LIFETIME
+        primary_key, source, layout, lifetime = [], [], [], []
+        for x in t:
+            if x.type == token.NAME:
+                if x.string == 'PRIMARY':
+                    state = 1
+                elif x.string == 'KEY':
+                    if state == 1:
+                        state = 2
+                        continue
+                    else:
+                        state = 0
+                elif x.string == 'SOURCE':
+                    state = 3
+                elif x.string == 'LAYOUT':
+                    state = 4
+                elif x.string == 'LIFETIME':
+                    state = 5
+            if state == 2:
+                primary_key += [x]
+            elif state == 3:
+                source += [x]
+            elif state == 4:
+                layout += [x]
+            elif state == 5:
+                lifetime += [x]
+
+        self.primary_key = untokenize(s, primary_key)
+        self.source = self._parse_source(s, source)
+        self.layout = untokenize(s, layout)
+        self.lifetime = self._parse_lifetime(s, lifetime)
+
+    def scan(self, client):
+        (s, t) = client.execute_clickhouse_tables_sql_tokens(
+            self.dbname, 'create_table_query')
+
+        self._parse_create_query(s, t)
+        self._parse_columns(s, t)
+        return self
+
+    def read(self, s, t):
+        self._parse_create_query(s, t)
+        self._parse_columns(s, t)
+        return self
+
+    def diff(self, other):
+        ret = super().diff(other)
+        if len(ret) > 0:
+            return ret
+
+        if self.primary_key != other.primary_key:
+            ret += ['primary key']
+
+        if self.source != other.source:
+            ret += ['source']
+
+        if self.layout != other.layout:
+            ret += ['layout']
+
+        if self.lifetime[0] != other.lifetime[0] or \
+            self.lifetime[1] != other.lifetime[1]:
+            ret += ['lifetime']
 
         return ret
 
@@ -552,6 +759,8 @@ class Model(object):
                 self.null[dbname] = Null(dbname).scan(client)
             elif engine == 'TinyLog':
                 self.null[dbname] = TinyLog(dbname).scan(client)
+            elif engine == 'KeeperMap':
+                self.null[dbname] = KeeperMap(dbname).scan(client)
             elif engine == 'Dictionary':
                 self.null[dbname] = Dictionary(dbname).scan(client)
             else:
@@ -621,6 +830,8 @@ class Model(object):
             self.null[dbname] = Null(dbname).read(s, t)
         elif engine == 'TinyLog':
             self.null[dbname] = TinyLog(dbname).read(s, t)
+        elif engine == 'KeeperMap':
+            self.null[dbname] = KeeperMap(dbname).read(s, t)
         elif engine == 'Dictionary':
             self.null[dbname] = Dictionary(dbname).read(s, t)
 
