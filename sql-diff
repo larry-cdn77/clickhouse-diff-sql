@@ -162,33 +162,38 @@ class MT(Table):
         self.sorting_key = ''
 
     def _parse_engine(self, s, t):
-        state = 0 # 1 = TTL, 2 = SETTINGS
+        state = 0 # 1 = MergeTree, 2 = TTL, 3 = SETTINGS
         setting = ''
         ttl = []
         for x in t:
             if x.type == token.NAME:
-                if x.string == 'TTL':
+                if x.string == 'MergeTree': # heuristic to skip column settings
                     state = 1
                     continue
-                elif x.string == 'SETTINGS':
+                elif state == 0:
+                    continue
+                elif x.string == 'TTL':
                     state = 2
                     continue
+                elif x.string == 'SETTINGS':
+                    state = 3
+                    continue
                 elif x.string in ['PARTITION', 'ORDER', 'PRIMARY']:
-                    state = 0 # quick & dirty heuristic to end TTL/SETTINGS clause
+                    state = 1 # quick & dirty heuristic to end TTL/SETTINGS clause
                 else:
-                    if state == 1:
+                    if state == 2:
                         if x.string != 'DELETE': # system.tables omits DELETE
                             ttl += [x]
-                    elif state == 2:
+                    elif state == 3:
                         if setting == '':
                             setting = x.string
                         else:
                             self.settings[setting] = '%s=%s' % (setting, x.string)
                             setting = ''
             else:
-                if state == 1:
+                if state == 2:
                     ttl += [x]
-                elif state == 2:
+                elif state == 3:
                     if x.exact_type not in [
                         token.EQUAL, token.COMMA, token.ENDMARKER, token.NEWLINE]:
                         self.settings[setting] = '%s=%s' % (setting, expand_scientific(x.string))
@@ -248,7 +253,7 @@ class MT(Table):
             return ret
 
         if self.ttl != other.ttl:
-            ret += ['TTL']
+            ret += ['TTL ("%s" "%s")' % (self.ttl, other.ttl)]
 
         for setting in set(self.settings.values()) ^ set(other.settings.values()):
             if setting.startswith('storage_policy'):
