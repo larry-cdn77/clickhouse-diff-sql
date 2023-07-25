@@ -787,8 +787,8 @@ class Model(object):
             if mv.fr not in (self.mt | self.null):
                 print('warning: %s from-table %s not found amongst known MergeTree and Null' % \
                   (dbname, mv.fr))
-            if mv.to not in self.mt: # assume to-table is MergeTree
-                print('warning: %s to-table %s not found amogst known running MergeTree' % \
+            if mv.to not in (self.mt | self.null):
+                print('warning: %s to-table %s not found amogst known running MergeTree and Null' % \
                   (dbname, mv.to))
 
     def scan(self, client):
@@ -797,7 +797,13 @@ class Model(object):
         self._verify_dependencies()
         return self
 
-    def _detect_engine(self, t):
+    def _read_dbname(self, t):
+        if t[1].exact_type == token.DOT:
+            return '%s.%s' % (t[0].string, t[2].string)
+        else:
+            return 'default.%s' % t[0].string
+
+    def _read_engine(self, t):
         state = 0 # 1 = seen ENGINE, 2 = seen equal sign
         for x in t:
             if state == 0:
@@ -814,14 +820,14 @@ class Model(object):
 
     def _read_create_statement(self, s, t):
         if t[1].string == 'MATERIALIZED' and t[2].string == 'VIEW':
-            dbname = '%s.%s' % (t[3].string, t[5].string)
+            dbname = self._read_dbname(t[3:])
             engine = 'MaterializedView'
         elif t[1].string == 'DICTIONARY':
-            dbname = '%s.%s' % (t[2].string, t[4].string)
+            dbname = self._read_dbname(t[2:])
             engine = 'Dictionary'
         elif t[1].string == 'TABLE':
-            dbname = '%s.%s' % (t[2].string, t[4].string)
-            engine = self._detect_engine(t)
+            dbname = self._read_dbname(t[2:])
+            engine = self._read_engine(t)
         else:
             return
 
