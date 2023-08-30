@@ -266,7 +266,7 @@ class MT(Table):
                 (self.partition_key, other.partition_key)]
 
         if self.sorting_key != other.sorting_key:
-            ret += ['sorting']
+            ret += ['sorting ("%s" "%s")' % (self.sorting_key, other.sorting_key)]
 
         return ret
 
@@ -294,28 +294,52 @@ class MV(Table):
         self.fr = ''
 
     def _parse_create_query(self, s, t):
-        state = 0 # 1 = TO, 2 = FROM
-        count = 0
+        state = 0 # 1 = TO, 2 = full-stop, 3 = FROM, 4 = full stop
         fr, to = [], []
         for x in t:
-            if x.type == token.NAME:
-                if x.string == 'TO':
-                    state = 1
-                    count = 4
-                elif x.string == 'FROM':
+            if state == 0:
+                if x.type == token.NAME:
+                    if x.string == 'TO':
+                        state = 1
+                    elif x.string == 'FROM':
+                        state = 3
+                        fr = [] # reset to capture last of multiple 'FROM'
+            elif state == 1:
+                if x.type == token.NAME:
+                    if len(to) == 0:
+                        to = [x.string]
+                    else:
+                        state = 0
+                elif x.exact_type == token.DOT:
                     state = 2
-                    fr = [] # reset in order to capture last of multiple 'FROM'
-                    count = 4
-            if state == 1:
-                to += [x.string]
-                count -= 1
             elif state == 2:
-                fr += [x.string]
-                count -= 1
-            if count == 0:
+                if x.type == token.NAME:
+                    if len(to) == 1:
+                        to += [x.string]
                 state = 0
-        self.to = '%s.%s' % (to[1], to[3])
-        self.fr = '%s.%s' % (fr[1], fr[3])
+            elif state == 3:
+                if x.type == token.NAME:
+                    if len(fr) == 0:
+                        fr = [x.string]
+                    else:
+                        state = 0
+                elif x.exact_type == token.DOT:
+                    state = 4
+            elif state == 4:
+                if x.type == token.NAME:
+                    if len(fr) == 1:
+                        fr += [x.string]
+                state = 0
+
+        if len(to) == 1:
+            self.to = 'default.%s' % to[0]
+        else:
+            self.to = '%s.%s' % (to[0], to[1])
+        if len(fr) == 1:
+            self.fr = 'default.%s' % fr[0]
+        else:
+            self.fr = '%s.%s' % (fr[0], fr[1])
+        #print('+', self.fr, self.to, '"%s"' % s)
 
         state = 0 # 1 = seen first AS, 2 = seen SELECT after AS
         as_select = []
@@ -385,18 +409,27 @@ class Buffer(Table):
         self.parameters = {}
 
     def _parse_engine(self, s, t):
-        db, name = '', ''
+        state = 0 # 1 = (, 2 = first comma, 3 = second comma
+        db, name = 'default', '' # default when currentDatabase() used
         index = 0
         for x in t:
-            if x.type == token.STRING:
-                if db == '': # heuristic on first two strings encountered
+            if x.exact_type == token.LPAR:
+                if state == 0:
+                    state = 1
+            elif x.exact_type == token.COMMA:
+                if state in [1, 2]:
+                    state += 1
+            elif x.type == token.STRING:
+                if state == 1:
                     db = eval(x.string)
-                elif name == '':
+                elif state == 2:
                     name = eval(x.string)
             elif x.type == token.NUMBER:
-                self.parameters[index] = expand_scientific(x.string)
-                index += 1
+                if state == 3:
+                    self.parameters[index] = expand_scientific(x.string)
+                    index += 1
 
+        #print('+', '%s.%s' % (db, name), '"%s"' % s)
         self.to = '%s.%s' % (db, name)
 
     def scan(self, client):
@@ -442,16 +475,22 @@ class Dist(Table):
         self.fr = ''
 
     def _parse_engine(self, s, t):
-        db, name = '', ''
-        count = 0
+        state = 0 # 1 = (, 2 = first comma, 3 = second comma
+        db, name = 'default', '' # default when currentDatabase() used
         for x in t:
-            if x.type == token.STRING:
-                count += 1 # heuristic on sequence of strings encountered
-                if count == 2:
+            if x.exact_type == token.LPAR:
+                if state == 0:
+                    state = 1
+            elif x.exact_type == token.COMMA:
+                if state in [1, 2]:
+                    state += 1
+            elif x.type == token.STRING:
+                if state == 2:
                     db = eval(x.string)
-                elif count == 3:
+                elif state == 3:
                     name = eval(x.string)
 
+        #print('+', '%s.%s' % (db, name), '"%s"' % s)
         self.fr = '%s.%s' % (db, name)
 
     def scan(self, client):
