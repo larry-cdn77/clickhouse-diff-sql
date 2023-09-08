@@ -358,6 +358,9 @@ class MV(Table):
 
         self.as_select = untokenize(s, as_select)
 
+        # heuristic: remove explicit 'default.' in from-table
+        self.as_select = re.sub(r'FROM [a-zA-Z0-9_]*\.', 'FROM ', self.as_select)
+
     def scan(self, client):
         self._parse_create_query(*client.execute_clickhouse_tables_sql_tokens(
             self.dbname, 'create_table_query'))
