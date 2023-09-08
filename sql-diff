@@ -902,7 +902,6 @@ class Model(object):
                     self._read_statement(s,
                         list(tokenize.generate_tokens(io.StringIO(s).readline)))
 
-        self._verify_dependencies()
         return self
 
     def __str__(self):
