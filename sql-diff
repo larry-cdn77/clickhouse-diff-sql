@@ -1,5 +1,4 @@
 #!/usr/bin/python3
-# TODO defensive parsing failures
 import difflib
 import io
 import re
@@ -10,7 +9,7 @@ import tokenize
 
 import clickhouse_driver
 
-__version__ = '0.1.2'
+__version__ = '0.1.4'
 
 sqlparse_format = {
     'strip_comments': True,
@@ -151,10 +150,10 @@ class MT(Table):
     '''
     MergeTree engine family
 
-    check columns, TTL, settings, partitioning key and sorting key
+    check engine, columns, TTL, settings, partitioning key and sorting key
     '''
-    def __init__(self, dbname):
-        super().__init__('MergeTree', dbname)
+    def __init__(self, dbname, engine):
+        super().__init__(engine, dbname)
 
         self.ttl = ''
         self.settings = {}
@@ -167,7 +166,7 @@ class MT(Table):
         ttl = []
         for x in t:
             if x.type == token.NAME:
-                if x.string == 'MergeTree': # heuristic to skip column settings
+                if x.string.endswith('MergeTree'): # heuristic to skip column settings
                     state = 1
                     continue
                 elif state == 0:
@@ -797,7 +796,7 @@ class Model(object):
             WHERE database == '%s' AND name = '%s'
             ''' % tuple(dbname.split('.'))):
             if engine.endswith('MergeTree'):
-                self.mt[dbname] = MT(dbname).scan(client)
+                self.mt[dbname] = MT(dbname, engine).scan(client)
             elif engine == 'MaterializedView':
                 self.mv[dbname] = MV(dbname).scan(client)
             elif engine == 'Buffer':
@@ -874,7 +873,7 @@ class Model(object):
             return
 
         if engine.endswith('MergeTree'):
-            self.mt[dbname] = MT(dbname).read(s, t)
+            self.mt[dbname] = MT(dbname, engine).read(s, t)
         elif engine == 'MaterializedView':
             self.mv[dbname] = MV(dbname).read(s, t)
         elif engine == 'Buffer':
