@@ -837,6 +837,20 @@ class Model(object):
 
         self._verify_dependencies()
         return self
+    
+    def _preprocess(self, statement):
+        # formatted
+        s = sqlparse.format(statement, **sqlparse_format)
+
+        # without trailing semicolons
+        s = s.rstrip(';')
+
+        # whitespace collapsed
+        s = re.sub(r'\s+', ' ', s.strip())
+
+        s = s.replace(' IF NOT EXISTS ', ' ')
+
+        return s
 
     def _read_dbname(self, t):
         if t[1].exact_type == token.DOT:
@@ -896,11 +910,8 @@ class Model(object):
     def read(self, files):
         for file in files:
             with open(file) as fd:
-                for parsed_statement in sqlparse.split(fd.read()):
-                    s = re.sub(r'\s+', ' ',
-                        sqlparse.format(parsed_statement,
-                        **sqlparse_format).rstrip(';')).strip()
-
+                for statement in sqlparse.split(fd.read()):
+                    s = self._preprocess(statement)
                     self._read_statement(s,
                         list(tokenize.generate_tokens(io.StringIO(s).readline)))
 
